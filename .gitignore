@@ -1,0 +1,12 @@
+.venv
+**/__pycache__
+
+AsusWinIO64.dll
+dev.bat
+err.log
+out.log
+settings.json
+
+build
+dist
+main.spec
