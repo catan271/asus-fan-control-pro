@@ -2,6 +2,7 @@ from copy import deepcopy
 import gc
 import os
 import sys
+from threading import Thread
 from typing import Callable, Optional, Union
 from PyQt5.QtWidgets import (
     QApplication,
@@ -149,10 +150,23 @@ class FanControlTab(QWidget):
         # Curve
         curve_widget = QWidget()
         curve_layout = QVBoxLayout(curve_widget)
-        self.interval_input = QLineEdit(str(value["curve_interval"]))
-        self.interval_input.setPlaceholderText("Interval in milliseconds")
-        curve_layout.addWidget(QLabel("Polling interval (ms):"))
-        curve_layout.addWidget(self.interval_input)
+
+        input_layout = QHBoxLayout()
+        curve_interval_layout = QVBoxLayout()
+        self.curve_interval_input = QLineEdit(str(value["curve_interval"]))
+        self.curve_interval_input.textChanged.connect(self.update_curve_interval)
+        self.curve_interval_input.setPlaceholderText("Interval in milliseconds")
+        curve_interval_layout.addWidget(QLabel("Polling interval (ms):"))
+        curve_interval_layout.addWidget(self.curve_interval_input)
+        moving_average_layout = QVBoxLayout()
+        self.moving_average_input = QLineEdit(str(value["moving_average"]))
+        self.moving_average_input.textChanged.connect(self.update_moving_average)
+        self.moving_average_input.setPlaceholderText("Moving average limit")
+        moving_average_layout.addWidget(QLabel("Moving average:"))
+        moving_average_layout.addWidget(self.moving_average_input)
+        input_layout.addLayout(curve_interval_layout)
+        input_layout.addLayout(moving_average_layout)
+        curve_layout.addLayout(input_layout)
 
         chart_layout = QHBoxLayout()
 
@@ -202,9 +216,14 @@ class FanControlTab(QWidget):
         self.on_change({**self.value, "specific_value": self.specific_value})
 
     def update_curve_interval(self):
-        interval = max(int(self.interval_input.text()), 1000)
-        self.curve_interval = interval
-        self.on_change({**self.value, "curve_interval": interval})
+        v = max(int(self.curve_interval_input.text()), 1000)
+        self.curve_interval = v
+        self.on_change({**self.value, "curve_interval": v})
+
+    def update_moving_average(self):
+        v = max(int(self.curve_interval_input.text()), 1000)
+        self.moving_average = v
+        self.on_change({**self.value, "moving_average": v})
 
     def update_cpu_curve(self):
         cpu_curve = self.cpu_scatter.get_points()
@@ -294,12 +313,14 @@ class FanControlApp(QWidget):
         self.init_elements()
 
     def closeEvent(self, a0: Optional[QCloseEvent]):
-        uninstall(self.asus)
-        register()
         return super().closeEvent(a0)
 
 
 if __name__ == "__main__":
+    # current_dir = os.path.dirname(os.path.abspath(__file__))
+    # sys.stdout = open(os.path.join(current_dir, "out.log"), "w")
+    # sys.stderr = open(os.path.join(current_dir, "err.log"), "w")
+
     asus = AsusControl()
     if "--service" in sys.argv:
         service_apply_settings(asus)
@@ -311,4 +332,10 @@ if __name__ == "__main__":
         fan_control = FanControlApp(asus)
         fan_control.resize(1200, 800)
         fan_control.show()
+
+        def handle_app_close():
+            uninstall(asus)
+            register()
+
+        fan_control.destroyed.connect(handle_app_close)
         sys.exit(app.exec_())

@@ -1,8 +1,9 @@
 import ctypes
 from ctypes import c_byte, c_char, c_short, c_int, c_ulonglong
 import os
-import random
-import GPUtil
+from threading import Event
+from time import sleep
+from GPUtil import getGPUs
 
 # Load the DLL
 dll_path = os.path.join(os.path.dirname(__file__), "AsusWinIO64.dll")
@@ -83,5 +84,5 @@ class AsusControl:
         return asus.Thermal_Read_Cpu_Temperature()
 
     def gpu_temperature(self) -> int:
-        gpus = GPUtil.getGPUs()
+        gpus = getGPUs()
         return int(max(each.temperature for each in gpus)) if gpus else 0

@@ -1,9 +1,9 @@
-from dataclasses import dataclass
+from collections import deque
 import json
 from math import ceil, floor
 import subprocess
-import threading
-import time
+from threading import Thread, Event, Timer
+from time import sleep
 from typing import Callable
 from jsonschema import validate, ValidationError
 import os
@@ -23,7 +23,8 @@ settings_schema = {
                 "properties": {
                     "mode": {"type": "integer", "enum": [0, 1, 2]},
                     "specific_value": {"type": "integer", "minimum": 0, "maximum": 100},
-                    "curve_interval": {"type": "integer", "minimum": 1},
+                    "curve_interval": {"type": "integer", "minimum": 1000},
+                    "moving_average": {"type": "integer", "minimum": 1},
                     "cpu_curve": {
                         "type": "array",
                         "items": {
@@ -51,6 +52,7 @@ settings_schema = {
                     "mode",
                     "specific_value",
                     "curve_interval",
+                    "moving_average",
                     "cpu_curve",
                     "gpu_curve",
                 ],
@@ -71,7 +73,8 @@ def default_settings(fan_count: int):
             {
                 "mode": 0,
                 "specific_value": 50,
-                "curve_interval": 5000,
+                "curve_interval": 3000,
+                "moving_average": 6,
                 "cpu_curve": [
                     [0, 0],
                     [10, 10],
@@ -133,18 +136,55 @@ def clear_layout(layout: QLayout):
             clear_layout(item.layout())
 
 
+class MovingAverage:
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.queue = deque()
+        self.total = 0
+
+    def push(self, value: int) -> int:
+        # Add new value
+        self.queue.append(value)
+        self.total += value
+
+        # If we've exceeded the window size, pop the oldest
+        if len(self.queue) > self.limit:
+            removed = self.queue.popleft()
+            self.total -= removed
+
+        # Compute and return integer average (floor division)
+        return self.total // len(self.queue)
+
+
+class SetInterval:
+    def __init__(self, interval: float, function: Callable):
+        self.interval = interval / 1000
+        self.function = function
+        self.timer = None
+        self.callback()
+
+    def callback(self):
+        if self.function:
+            self.function()
+            self.timer = Timer(self.interval, self.callback)
+            self.timer.start()
+
+    def cancel(self):
+        self.function = None
+        if self.timer:
+            self.timer.cancel()
+
+
 class SetInterval:
     def __init__(self, interval: int, action: Callable):
         self.interval = interval / 1000
         self.action = action
-        self.stopEvent = threading.Event()
-        thread = threading.Thread(target=self.__setInterval)
+        self.stopEvent = Event()
+        thread = Thread(target=self.__setInterval)
         thread.start()
 
     def __setInterval(self):
-        nextTime = time.time() + self.interval
-        while not self.stopEvent.wait(nextTime - time.time()):
-            nextTime += self.interval
+        while not self.stopEvent.wait(self.interval):
             self.action()
 
     def cancel(self):
@@ -194,53 +234,56 @@ def apply_settings(asus: AsusControl, settings: dict):
     clear_intervals()
 
     if fan_sync:
-        mode = settings["fans"][0]["mode"]
-        specific_value = settings["fans"][0]["specific_value"]
-        curve_interval = settings["fans"][0]["curve_interval"]
-        cpu_curve = settings["fans"][0]["cpu_curve"]
-        gpu_curve = settings["fans"][0]["gpu_curve"]
-
+        fan_settings = settings["fans"][0]
+        mode = fan_settings["mode"]
         if mode == 0:
             asus.set_all_fan_speeds(0)
         elif mode == 1:
-            asus.set_all_fan_speeds_percent(specific_value)
+            asus.set_all_fan_speeds_percent(fan_settings["specific_value"])
         else:
-            cpu_temp_speed = get_speed_map(cpu_curve)
-            gpu_temp_speed = get_speed_map(gpu_curve)
+            asus.set_all_fan_speeds(0)
+
+            cpu_temp_speed = get_speed_map(fan_settings["cpu_curve"])
+            gpu_temp_speed = get_speed_map(fan_settings["gpu_curve"])
+
+            moving_average = fan_settings["moving_average"]
+            cpu_ma = MovingAverage(moving_average)
+            gpu_ma = MovingAverage(moving_average)
 
             def action():
                 speed = max(
-                    get_speed(cpu_temp_speed, asus.cpu_temperature()),
-                    get_speed(gpu_temp_speed, asus.gpu_temperature()),
+                    get_speed(cpu_temp_speed, cpu_ma.push(asus.cpu_temperature())),
+                    get_speed(gpu_temp_speed, gpu_ma.push(asus.gpu_temperature())),
                 )
                 asus.set_all_fan_speeds_percent(speed)
 
-            intervals[0] = SetInterval(curve_interval, action)
+            intervals[0] = SetInterval(settings["fans"][0]["curve_interval"], action)
 
     else:
         for i, fan_settings in enumerate(settings["fans"]):
             mode = fan_settings["mode"]
-            specific_value = fan_settings["specific_value"]
-            curve_interval = fan_settings["curve_interval"]
-            cpu_curve = fan_settings["cpu_curve"]
-            gpu_curve = fan_settings["gpu_curve"]
-
             if mode == 0:
                 asus.set_fan_speed(0, i)
             elif mode == 1:
-                asus.set_fan_speed_percent(specific_value, i)
+                asus.set_fan_speed_percent(fan_settings["specific_value"], i)
             else:
-                cpu_temp_speed = get_speed_map(cpu_curve)
-                gpu_temp_speed = get_speed_map(gpu_curve)
+                asus.set_fan_speed(0, i)
+
+                cpu_temp_speed = get_speed_map(fan_settings["cpu_curve"])
+                gpu_temp_speed = get_speed_map(fan_settings["gpu_curve"])
+
+                moving_average = fan_settings["moving_average"]
+                cpu_ma = MovingAverage(moving_average)
+                gpu_ma = MovingAverage(moving_average)
 
                 def action():
                     speed = max(
-                        get_speed(cpu_temp_speed, asus.cpu_temperature()),
-                        get_speed(gpu_temp_speed, asus.gpu_temperature()),
+                        get_speed(cpu_temp_speed, cpu_ma.push(asus.cpu_temperature())),
+                        get_speed(gpu_temp_speed, gpu_ma.push(asus.gpu_temperature())),
                     )
                     asus.set_fan_speed_percent(speed, i)
 
-                intervals[i] = SetInterval(curve_interval, action)
+                intervals[i] = SetInterval(fan_settings["curve_interval"], action)
 
 
 def service_apply_settings(asus: AsusControl):
@@ -265,12 +308,13 @@ def unregister():
     try:
         subprocess.run([nssm_path, "stop", "AsusFanControl"])
         subprocess.run([nssm_path, "remove", "AsusFanControl", "confirm"])
-    except:
-        pass
+    except Exception as e:
+        return
 
 
 def register():
     unregister()
+    sleep(3)
     exe_dir = os.path.join(current_dir, "..")
     exe_path = os.path.join(exe_dir, "main.exe")
     subprocess.run(
