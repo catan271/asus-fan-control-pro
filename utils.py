@@ -1,9 +1,8 @@
+import asyncio
 from collections import deque
 import json
 from math import ceil, floor
 import subprocess
-from threading import Thread, Event, Timer
-from time import sleep
 from typing import Callable
 from jsonschema import validate, ValidationError
 import os
@@ -157,38 +156,20 @@ class MovingAverage:
 
 
 class SetInterval:
-    def __init__(self, interval: float, function: Callable):
-        self.interval = interval / 1000
-        self.function = function
-        self.timer = None
-        self.callback()
-
-    def callback(self):
-        if self.function:
-            self.function()
-            self.timer = Timer(self.interval, self.callback)
-            self.timer.start()
-
-    def cancel(self):
-        self.function = None
-        if self.timer:
-            self.timer.cancel()
-
-
-class SetInterval:
     def __init__(self, interval: int, action: Callable):
-        self.interval = interval / 1000
+        self.interval = interval / 1000  # Convert milliseconds to seconds
         self.action = action
-        self.stopEvent = Event()
-        thread = Thread(target=self.__setInterval)
-        thread.start()
+        self._task = asyncio.create_task(self._run())
 
-    def __setInterval(self):
-        while not self.stopEvent.wait(self.interval):
-            self.action()
+    async def _run(self):
+        while True:
+            await asyncio.sleep(self.interval)
+            result = self.action()
+            if asyncio.iscoroutine(result):
+                await result
 
     def cancel(self):
-        self.stopEvent.set()
+        self._task.cancel()
 
 
 intervals = dict[int, SetInterval]()
@@ -241,8 +222,6 @@ def apply_settings(asus: AsusControl, settings: dict):
         elif mode == 1:
             asus.set_all_fan_speeds_percent(fan_settings["specific_value"])
         else:
-            asus.set_all_fan_speeds(0)
-
             cpu_temp_speed = get_speed_map(fan_settings["cpu_curve"])
             gpu_temp_speed = get_speed_map(fan_settings["gpu_curve"])
 
@@ -267,8 +246,6 @@ def apply_settings(asus: AsusControl, settings: dict):
             elif mode == 1:
                 asus.set_fan_speed_percent(fan_settings["specific_value"], i)
             else:
-                asus.set_fan_speed(0, i)
-
                 cpu_temp_speed = get_speed_map(fan_settings["cpu_curve"])
                 gpu_temp_speed = get_speed_map(fan_settings["gpu_curve"])
 
@@ -295,12 +272,6 @@ def service_apply_settings(asus: AsusControl):
         unregister()
 
 
-def uninstall(asus: AsusControl):
-    clear_intervals()
-    asus.set_all_fan_speeds(0)
-    asus.__del__()
-
-
 nssm_path = os.path.join(current_dir, "nssm.exe")
 
 
@@ -312,9 +283,9 @@ def unregister():
         return
 
 
-def register():
+async def register():
     unregister()
-    sleep(3)
+    await asyncio.sleep(3)
     exe_dir = os.path.join(current_dir, "..")
     exe_path = os.path.join(exe_dir, "main.exe")
     subprocess.run(
@@ -327,3 +298,10 @@ def register():
         ]
     )
     subprocess.run([nssm_path, "start", "AsusFanControl"])
+
+
+async def cleanup(asus: AsusControl):
+    clear_intervals()
+    asus.set_all_fan_speeds(0)
+    asus.__del__()
+    await register()

@@ -4,6 +4,11 @@ Thought MyASUS provide me with fan profile options. But they don't seem to be ve
 
 One day I came across some repos on Github that provide applications to control the fan of Asus Vivobook laptops. But those applications don't work if your machine is using ASUS System Control Interface driver v3.1.39.0 or later. I guess that the APIs that were used to control the fans now require SYSTEM privilege to run. So I came up with the solution of leveraging PsExec and nssm. After hours of working on the project, I finally made it work. The app can be setup to run as a System service on Windows startup, so you don't have to open it up every time.
 
+# Run the application
+
+- Find the latest release here: [Release](https://github.com/catan271/asus-fan-control-pro/releases)
+- Unzip and open `run.bat`, select the mode you want and hit apply. The settings will be affective immediately. If you want it to persist after you close the app or reboot, check Start with Windows and save. The background service only obeys saved settings.
+
 # Prerequisites
 
 - Your Laptop must be ASUS (obviously) and have the Fan testing feature in MyASUS app.

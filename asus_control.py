@@ -1,8 +1,6 @@
 import ctypes
 from ctypes import c_byte, c_char, c_short, c_int, c_ulonglong
 import os
-from threading import Event
-from time import sleep
 from GPUtil import getGPUs
 
 # Load the DLL

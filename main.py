@@ -1,8 +1,7 @@
+import asyncio
 from copy import deepcopy
-import gc
 import os
 import sys
-from threading import Thread
 from typing import Callable, Optional, Union
 from PyQt5.QtWidgets import (
     QApplication,
@@ -21,17 +20,16 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QCloseEvent
 import pyqtgraph as pg
+from qasync import QEventLoop, asyncClose, asyncSlot
 from asus_control import AsusControl
 from utils import (
     apply_settings,
-    clear_intervals,
     clear_layout,
     load_settings,
-    register,
     save_settings,
     service_apply_settings,
-    uninstall,
     unregister,
+    cleanup,
 )
 
 
@@ -312,8 +310,36 @@ class FanControlApp(QWidget):
         clear_layout(self.main_layout)
         self.init_elements()
 
-    def closeEvent(self, a0: Optional[QCloseEvent]):
-        return super().closeEvent(a0)
+
+def app():
+    asus = AsusControl()
+    app = QApplication(sys.argv)
+    event_loop = QEventLoop(app)
+    asyncio.set_event_loop(event_loop)
+    app_close_event = asyncio.Event()
+
+    fan_control = FanControlApp(asus)
+    fan_control.resize(1200, 800)
+    fan_control.show()
+    app.aboutToQuit.connect(app_close_event.set)
+
+    with event_loop:
+        try:
+            event_loop.run_until_complete(app_close_event.wait())
+            asyncio.run(cleanup(asus))
+        except KeyboardInterrupt:
+            return
+
+
+async def service():
+    asus = AsusControl()
+    service_apply_settings(asus)
+
+    while True:
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if not tasks:
+            break
+        await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":
@@ -321,21 +347,7 @@ if __name__ == "__main__":
     # sys.stdout = open(os.path.join(current_dir, "out.log"), "w")
     # sys.stderr = open(os.path.join(current_dir, "err.log"), "w")
 
-    asus = AsusControl()
     if "--service" in sys.argv:
-        service_apply_settings(asus)
-        input("Press Enter to exit")
-        uninstall(asus)
-
+        asyncio.run(service())
     else:
-        app = QApplication(sys.argv)
-        fan_control = FanControlApp(asus)
-        fan_control.resize(1200, 800)
-        fan_control.show()
-
-        def handle_app_close():
-            uninstall(asus)
-            register()
-
-        fan_control.destroyed.connect(handle_app_close)
-        sys.exit(app.exec_())
+        app()
